@@ -1,51 +1,69 @@
 # workspace-docs-mcp
 
-Opinionated local-first docs retrieval MCP server.
+Local, scoped documentation retrieval for coding agents.
 
-## Conventions (default)
+## What this solves
 
-The server indexes only:
+When an agent works in a large repo, it usually has two bad options:
+
+- read lots of files and waste context window
+- miss important docs that live in project folders
+
+`workspace-docs-mcp` solves this by indexing docs once and retrieving only relevant chunks at query time.
+
+## Why this project exists
+
+This project exists to make docs usage:
+
+- local-first
+- workspace-isolated
+- fast enough for daily use
+- opinionated with low setup overhead
+
+It is built for teams that keep docs in predictable places and want agents to use them without stuffing entire documents into prompts.
+
+## Opinionated folder convention
+
+By default, only these paths are indexed:
 
 - `./docs/**`
 - `./projects/*/docs/**`
 
-Scope behavior:
+Behavior:
 
-- inside `./projects/<project>/...`: prioritize `<project>/docs`, then `./docs`
-- workspace-wide tasks: prioritize `./docs`, include project docs only when relevant
-- sibling project docs are excluded by default while focused on one project
+- if you are working inside `./projects/<name>/...`, retrieval prioritizes that project's docs, then shared workspace docs
+- workspace-wide tasks prioritize shared docs first
+- sibling project docs are not prioritized by default when focused on one project
 
-## Supported formats
+## How it works (simple mental model)
 
-- Markdown and text: `.md`, `.markdown`, `.txt`
-- PDFs (text layer): `.pdf`
-- Word docs: `.docx`
-- Tabular: `.csv`, `.xlsx`
-- Images (OCR opt-in): `.png`, `.jpg`, `.jpeg`, `.webp`, `.tiff`, `.tif`
+1. You run `refresh_docs`.
+2. The server scans docs folders and builds/updates a local index in `./.rag/`.
+3. `search_docs` returns relevant chunks instead of raw files.
+4. `get_doc` is used only for specific files when needed.
+
+This keeps prompts small and targeted.
 
 ## Storage and isolation
 
-Each workspace keeps its own index:
+Each workspace gets its own local index:
 
 - `./.rag/index.sqlite`
 - `./.rag/manifest.json`
 
-No cross-workspace index sharing is used.
+No cross-workspace sharing is used.
 
-## MCP tools
+## Supported file types
 
-- `search_docs(query, scope="auto", project=null, context_path=null, k=8, workspace_root=null)`
-- `get_doc(path, workspace_root=null, page=null, max_chars=20000)`
-- `refresh_docs(scope="auto", project=null, workspace_root=null, full=false)`
-- `status_docs(workspace_root=null)`
+- Text and markdown: `.txt`, `.md`, `.markdown`
+- PDF (text layer): `.pdf`
+- Word: `.docx`
+- Tables: `.csv`, `.xlsx`
+- Images via OCR (opt-in): `.png`, `.jpg`, `.jpeg`, `.webp`, `.tiff`, `.tif`
 
-## Refresh model
+## Quick start
 
-- `refresh_docs` is non-blocking and starts/reuses a background reconcile job.
-- `status_docs` exposes refresh progress/state.
-- `search_docs` can return partial results while index warmup is running.
-
-## Install (local development)
+### Option A: run from source
 
 ```bash
 cd ~/Sites/workspace-docs-mcp
@@ -53,42 +71,13 @@ uv sync
 uv run python -m workspace_docs_mcp.server
 ```
 
-## Install (package usage)
+### Option B: run as package
 
 ```bash
 uvx workspace-docs-mcp
 ```
 
-## OCR requirement (images)
-
-Image OCR uses `pytesseract` and requires the `tesseract` binary in your `PATH`.
-
-### macOS
-
-```bash
-brew install tesseract
-```
-
-### Ubuntu/Debian
-
-```bash
-sudo apt-get update
-sudo apt-get install -y tesseract-ocr
-```
-
-If OCR is enabled and a file OCR call times out/errors, that file is skipped and indexing continues.
-
-## Environment controls
-
-- `WORKSPACE_DOCS_ROOTS` (optional): comma-separated root overrides
-- `WORKSPACE_DOCS_ENABLE_DOCX` (default `true`)
-- `WORKSPACE_DOCS_ENABLE_IMAGE_OCR` (default `false`)
-- `WORKSPACE_DOCS_OCR_LANG` (default `eng`)
-- `WORKSPACE_DOCS_OCR_TIMEOUT_SECONDS` (default `15`)
-- `WORKSPACE_DOCS_MAX_ROWS_PER_TABLE_FILE` (default `25000`)
-- `WORKSPACE_DOCS_MAX_CELL_CHARS` (default `500`)
-
-## OpenCode example
+## OpenCode configuration example
 
 ```json
 {
@@ -106,7 +95,68 @@ If OCR is enabled and a file OCR call times out/errors, that file is skipped and
 }
 ```
 
-## Notes
+## How to use it day-to-day
 
-- OCR for image-only PDFs is not included.
-- Reconciliation supports incremental hash/mtime updates and manual refresh.
+In your OpenCode chat, ask explicitly if needed:
+
+- `Use MCP tool workspace_docs.refresh_docs`
+- `Use MCP tool workspace_docs.status_docs`
+- `Use MCP tool workspace_docs.search_docs with query "..."`
+- `Use MCP tool workspace_docs.get_doc with path "..."`
+
+## MCP tools
+
+- `search_docs(query, scope="auto", project=null, context_path=null, k=8, workspace_root=null)`
+- `get_doc(path, workspace_root=null, page=null, max_chars=20000)`
+- `refresh_docs(scope="auto", project=null, workspace_root=null, full=false)`
+- `status_docs(workspace_root=null)`
+
+## Refresh behavior and performance
+
+- `refresh_docs` is non-blocking and starts a background job
+- `status_docs` shows refresh progress and state
+- `search_docs` can return partial results while index warmup is in progress
+- first indexing run is usually the slowest; later runs are incremental
+
+## OCR (images) is opt-in
+
+OCR is disabled by default for predictable performance.
+
+To enable:
+
+- set `WORKSPACE_DOCS_ENABLE_IMAGE_OCR=true`
+- install Tesseract on your system
+
+macOS:
+
+```bash
+brew install tesseract
+```
+
+Ubuntu/Debian:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y tesseract-ocr
+```
+
+If OCR is enabled and a file times out, that file is skipped and indexing continues.
+
+## Environment variables
+
+- `WORKSPACE_DOCS_ROOTS` optional custom roots (comma-separated)
+- `WORKSPACE_DOCS_ENABLE_DOCX` default `true`
+- `WORKSPACE_DOCS_ENABLE_IMAGE_OCR` default `false`
+- `WORKSPACE_DOCS_OCR_LANG` default `eng`
+- `WORKSPACE_DOCS_OCR_TIMEOUT_SECONDS` default `15`
+- `WORKSPACE_DOCS_MAX_ROWS_PER_TABLE_FILE` default `25000`
+- `WORKSPACE_DOCS_MAX_CELL_CHARS` default `500`
+
+## Current limits
+
+- no OCR for image-only PDFs yet
+- uses local index files in each workspace
+
+## License
+
+MIT
