@@ -5,7 +5,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from workspace_docs_mcp.scope import classify_requested_scope, discover_source_files, infer_active_project
+from workspace_docs_mcp.scope import (
+    classify_requested_scope,
+    discover_source_files,
+    infer_active_project,
+    resolve_workspace_root,
+)
 
 
 class ScopeTests(unittest.TestCase):
@@ -57,6 +62,77 @@ class ScopeTests(unittest.TestCase):
 
             paths = {s.relative_path for s in sources}
             self.assertIn("docs/snap.png", paths)
+
+    def test_symlinked_docs_file_is_not_indexed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            docs = root / "docs"
+            docs.mkdir(parents=True)
+            outside = (root.parent / "outside-secret.md").resolve()
+            outside.write_text("secret", encoding="utf-8")
+            try:
+                (docs / "leak.md").symlink_to(outside)
+                sources = discover_source_files(root)
+                paths = {s.relative_path for s in sources}
+                self.assertNotIn("docs/leak.md", paths)
+            finally:
+                outside.unlink(missing_ok=True)
+
+    def test_resolve_workspace_root_rejects_override_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td).resolve()
+            default_root = base / "default"
+            other_root = base / "other"
+            default_root.mkdir(parents=True)
+            other_root.mkdir(parents=True)
+
+            with patch.dict("os.environ", {"OPENCODE_WORKSPACE": str(default_root)}, clear=False):
+                with self.assertRaises(ValueError):
+                    resolve_workspace_root(str(other_root))
+
+    def test_resolve_workspace_root_allows_override_when_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td).resolve()
+            default_root = base / "default"
+            other_root = base / "other"
+            default_root.mkdir(parents=True)
+            other_root.mkdir(parents=True)
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "OPENCODE_WORKSPACE": str(default_root),
+                    "WORKSPACE_DOCS_ALLOW_WORKSPACE_ROOT_OVERRIDE": "true",
+                },
+                clear=False,
+            ):
+                got = resolve_workspace_root(str(other_root))
+                self.assertEqual(got, other_root)
+
+    def test_resolve_workspace_root_enforces_allowed_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td).resolve()
+            default_root = base / "default"
+            allowed_root = base / "allowed"
+            disallowed_root = base / "disallowed"
+            default_root.mkdir(parents=True)
+            allowed_root.mkdir(parents=True)
+            disallowed_root.mkdir(parents=True)
+            allowed_child = allowed_root / "child"
+            allowed_child.mkdir(parents=True)
+
+            with patch.dict(
+                "os.environ",
+                {
+                    "OPENCODE_WORKSPACE": str(default_root),
+                    "WORKSPACE_DOCS_ALLOW_WORKSPACE_ROOT_OVERRIDE": "true",
+                    "WORKSPACE_DOCS_ALLOWED_ROOTS": str(allowed_root),
+                },
+                clear=False,
+            ):
+                self.assertEqual(resolve_workspace_root(str(allowed_child)), allowed_child)
+                with self.assertRaises(ValueError):
+                    resolve_workspace_root(str(disallowed_root))
 
 
 if __name__ == "__main__":

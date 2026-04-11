@@ -36,7 +36,16 @@ def _write_xlsx(path: Path, rows: list[list[object]]) -> None:
 
 
 class IntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._env_patch = patch.dict(
+            "os.environ",
+            {"WORKSPACE_DOCS_ALLOW_WORKSPACE_ROOT_OVERRIDE": "true"},
+            clear=False,
+        )
+        self._env_patch.start()
+
     def tearDown(self) -> None:
+        self._env_patch.stop()
         for rt in list(_RUNTIMES.values()):
             try:
                 rt.indexer.close()

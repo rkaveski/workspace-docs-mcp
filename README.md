@@ -47,6 +47,25 @@ You can use this without knowing any tool names.
 
 This keeps prompts small and targeted.
 
+## Example: you add a new doc
+
+Suppose you create a file:
+
+- `./docs/billing-runbook.md`
+
+With content like:
+
+- `How to rotate billing API keys`
+- `How to rerun failed invoice jobs`
+
+Then do this in chat:
+
+1. `Refresh docs for this workspace`
+2. `Show docs indexing status`
+3. `Search docs for "billing API keys"`
+
+After refresh completes, `search_docs` can retrieve content from `docs/billing-runbook.md`.
+
 ## Storage and isolation
 
 Each workspace gets its own local index:
@@ -114,6 +133,39 @@ Advanced (explicit tool calls), if your agent needs a hint:
 - `Use MCP tool workspace_docs.search_docs with query "..."`
 - `Use MCP tool workspace_docs.get_doc with path "..."`
 
+## Manual workflow today
+
+Today, indexing is refresh-driven (not continuous file watching).  
+If you add, edit, move, or delete docs, run refresh again.
+
+Typical manual loop:
+
+1. Make doc changes under `./docs/**` or `./projects/*/docs/**`
+2. Trigger refresh:
+   - chat: `Refresh docs for this workspace`
+   - or tool: `workspace_docs.refresh_docs`
+3. Check progress:
+   - chat: `Show docs indexing status`
+   - or tool: `workspace_docs.status_docs`
+4. Query:
+   - chat: `Search docs for "<topic>"`
+   - or tool: `workspace_docs.search_docs`
+
+## New workspace behavior
+
+In a brand-new workspace (no existing `./.rag/` index), the first docs tool call
+starts an initial background refresh automatically.
+
+Calls that can trigger this initial refresh:
+
+- `search_docs`
+- `status_docs`
+- `get_doc`
+
+After that initial index is created, ongoing doc changes are still manual-refresh:
+
+- run `Refresh docs for this workspace` (or `workspace_docs.refresh_docs`) after changes
+
 ## MCP tools
 
 - `search_docs(query, scope="auto", project=null, context_path=null, k=8, workspace_root=null)`
@@ -161,6 +213,8 @@ If OCR is enabled and a file times out, that file is skipped and indexing contin
 - `WORKSPACE_DOCS_OCR_TIMEOUT_SECONDS` default `15`
 - `WORKSPACE_DOCS_MAX_ROWS_PER_TABLE_FILE` default `25000`
 - `WORKSPACE_DOCS_MAX_CELL_CHARS` default `500`
+- `WORKSPACE_DOCS_ALLOW_WORKSPACE_ROOT_OVERRIDE` default `false` (when `false`, `workspace_root` must match `OPENCODE_WORKSPACE`/current working directory)
+- `WORKSPACE_DOCS_ALLOWED_ROOTS` optional comma-separated allowlist of directories for `workspace_root`
 
 ## Current limits
 

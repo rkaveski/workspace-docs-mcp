@@ -8,3 +8,4 @@ __pycache__/
 htmlcov/
 .rag/
 .DS_Store
+security_best_practices_report.md

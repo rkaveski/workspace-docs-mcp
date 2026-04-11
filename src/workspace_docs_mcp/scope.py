@@ -10,11 +10,30 @@ RefreshScopeMode = Literal["all", "workspace", "project", "auto_project"]
 
 
 def resolve_workspace_root(workspace_root: str | None = None) -> Path:
-    base = workspace_root or os.getenv("OPENCODE_WORKSPACE") or os.getcwd()
-    root = Path(base).expanduser().resolve()
-    if not root.exists() or not root.is_dir():
-        raise ValueError(f"Workspace root does not exist or is not a directory: {root}")
-    return root
+    default_root = Path(os.getenv("OPENCODE_WORKSPACE") or os.getcwd()).expanduser().resolve()
+    if not default_root.exists() or not default_root.is_dir():
+        raise ValueError(f"Workspace root does not exist or is not a directory: {default_root}")
+
+    if workspace_root is None:
+        return default_root
+
+    requested = Path(workspace_root).expanduser().resolve()
+    if not requested.exists() or not requested.is_dir():
+        raise ValueError(f"Workspace root does not exist or is not a directory: {requested}")
+
+    allow_override = _env_bool("WORKSPACE_DOCS_ALLOW_WORKSPACE_ROOT_OVERRIDE", False)
+    if requested != default_root and not allow_override:
+        raise ValueError(
+            "workspace_root override is disabled; set WORKSPACE_DOCS_ALLOW_WORKSPACE_ROOT_OVERRIDE=true "
+            "to allow selecting a different root"
+        )
+
+    allowed_roots = _allowed_workspace_roots()
+    if allowed_roots and not any(_is_within_workspace(requested, allowed) for allowed in allowed_roots):
+        allowed_display = ", ".join(str(p) for p in allowed_roots)
+        raise ValueError(f"Workspace root is outside WORKSPACE_DOCS_ALLOWED_ROOTS: {requested}; allowed: {allowed_display}")
+
+    return requested
 
 
 def resolve_refresh_scope(scope: str, project: str | None) -> tuple[RefreshScopeMode, str | None]:
@@ -199,9 +218,18 @@ def _walk_docs(
 ) -> list[SourceFile]:
     out: list[SourceFile] = []
     for path in docs_dir.rglob("*"):
+        # Never index symlinks to avoid cross-boundary content ingestion.
+        if path.is_symlink():
+            continue
         if not path.is_file():
             continue
         if path.suffix.lower() not in allowed_extensions:
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError:
+            continue
+        if not _is_within_workspace(resolved, workspace_root):
             continue
         stat = path.stat()
         out.append(
@@ -216,3 +244,32 @@ def _walk_docs(
             )
         )
     return out
+
+
+def _is_within_workspace(path: Path, workspace_root: Path) -> bool:
+    try:
+        path.relative_to(workspace_root)
+        return True
+    except ValueError:
+        return False
+
+
+def _allowed_workspace_roots() -> list[Path]:
+    raw = os.getenv("WORKSPACE_DOCS_ALLOWED_ROOTS", "").strip()
+    if not raw:
+        return []
+    roots: list[Path] = []
+    for item in (x.strip() for x in raw.split(",")):
+        if not item:
+            continue
+        root = Path(item).expanduser().resolve()
+        if root.exists() and root.is_dir():
+            roots.append(root)
+    return roots
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
