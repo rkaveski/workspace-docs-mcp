@@ -35,12 +35,15 @@ Behavior:
 - workspace-wide tasks prioritize shared docs first
 - sibling project docs are not prioritized by default when focused on one project
 
-## How it works (simple mental model)
+## How it works (no MCP knowledge needed)
 
-1. You run `refresh_docs`.
-2. The server scans docs folders and builds/updates a local index in `./.rag/`.
-3. `search_docs` returns relevant chunks instead of raw files.
-4. `get_doc` is used only for specific files when needed.
+You can use this without knowing any tool names.
+
+1. Open OpenCode in your repo.
+2. In chat, ask: `Refresh docs for this workspace`.
+3. The server scans docs folders and builds/updates `./.rag/` in the background.
+4. Then ask your normal question (for example: `How does report generation work in this project?`).
+5. The agent will search indexed docs first, then open specific files only when needed.
 
 This keeps prompts small and targeted.
 
@@ -97,7 +100,14 @@ uvx workspace-docs-mcp
 
 ## How to use it day-to-day
 
-In your OpenCode chat, ask explicitly if needed:
+Use plain chat requests first:
+
+- `Refresh docs for this workspace`
+- `Show docs indexing status`
+- `Search docs for "<topic>"`
+- `Open the doc that mentions <topic>`
+
+Advanced (explicit tool calls), if your agent needs a hint:
 
 - `Use MCP tool workspace_docs.refresh_docs`
 - `Use MCP tool workspace_docs.status_docs`
