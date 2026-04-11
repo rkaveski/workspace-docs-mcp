@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.24.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "workspace-docs-mcp"
+version = "0.1.0"
+description = "Opinionated workspace/project documentation retrieval MCP server for OpenCode"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "OpenCode Community" }]
+license = { text = "MIT" }
+dependencies = [
+  "mcp>=1.6.0",
+  "pypdf>=5.0.0",
+  "python-docx>=1.1.2",
+  "openpyxl>=3.1.5",
+  "pytesseract>=0.3.13",
+  "Pillow>=10.4.0",
+  "fastembed>=0.4.2"
+]
+
+[project.scripts]
+workspace-docs-mcp = "workspace_docs_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/workspace_docs_mcp"]

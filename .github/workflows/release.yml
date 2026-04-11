@@ -1,0 +1,24 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Build package
+        run: |
+          cd mcp/workspace-docs-mcp
+          uv build
+      - name: Publish to PyPI
+        run: |
+          cd mcp/workspace-docs-mcp
+          uv publish
