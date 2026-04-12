@@ -1,6 +1,16 @@
 # workspace-docs-mcp
 
-Local, scoped documentation retrieval for coding agents.
+Local project memory for coding agents: index your docs once, retrieve the right context on demand.
+
+## What This Memory Is (and Is Not)
+
+This project is a project memory layer, not a general personal memory system.
+
+It persistently indexes documentation inside your workspace and keeps that project context available for retrieval in future sessions.
+
+It does not memorize user preferences, personal profile data, or cross-project personal context.
+
+If you are looking for tools focused on personal memory (for example, systems like true-mem or supermemory), this serves a different goal: reliable project documentation memory for code work.
 
 ## What this solves
 
@@ -9,7 +19,7 @@ When an agent works in a large repo, it usually has two bad options:
 - read lots of files and waste context window
 - miss important docs that live in project folders
 
-`workspace-docs-mcp` solves this by indexing docs once and retrieving only relevant chunks at query time.
+`workspace-docs-mcp` solves this by acting as project memory: it indexes docs once and retrieves only relevant chunks at query time.
 
 ## Why this project exists
 
@@ -21,6 +31,8 @@ This project exists to make docs usage:
 - opinionated with low setup overhead
 
 It is built for teams that keep docs in predictable places and want agents to use them without stuffing entire documents into prompts.
+
+Think of it as persistent memory for your repository documentation, scoped to that workspace.
 
 ## Opinionated folder convention
 
@@ -34,6 +46,26 @@ Behavior:
 - if you are working inside `./projects/<name>/...`, retrieval prioritizes that project's docs, then shared workspace docs
 - workspace-wide tasks prioritize shared docs first
 - sibling project docs are not prioritized by default when focused on one project
+
+## If your docs do not follow this convention
+
+You can adapt indexing roots using `WORKSPACE_DOCS_ROOTS` (comma-separated paths, relative to workspace root).
+
+Example repository layout:
+
+- `./knowledge/**`
+- `./handbook/**`
+- `./services/*/runbooks/**`
+
+Set:
+
+- `WORKSPACE_DOCS_ROOTS=knowledge,handbook,services/*/runbooks`
+
+Then run refresh:
+
+- `Refresh docs for this workspace`
+
+Result: those folders become your project memory sources instead of only `docs/**` and `projects/*/docs/**`.
 
 ## How it works (no MCP knowledge needed)
 
@@ -74,6 +106,8 @@ Each workspace gets its own local index:
 - `./.rag/manifest.json`
 
 No cross-workspace sharing is used.
+
+These local files are the persistent project memory for docs in that workspace.
 
 ## Supported file types
 
@@ -132,6 +166,11 @@ Advanced (explicit tool calls), if your agent needs a hint:
 - `Use MCP tool workspace_docs.status_docs`
 - `Use MCP tool workspace_docs.search_docs with query "..."`
 - `Use MCP tool workspace_docs.get_doc with path "..."`
+
+## FAQ
+
+Q: Will this remember my personal preferences across projects?  
+A: No. It remembers indexed project documentation in the workspace, not user preference memory.
 
 ## Manual workflow today
 
@@ -220,6 +259,7 @@ If OCR is enabled and a file times out, that file is skipped and indexing contin
 
 - no OCR for image-only PDFs yet
 - uses local index files in each workspace
+- not a general personal memory system (does not learn user preferences)
 
 ## License
 
