@@ -147,8 +147,33 @@ class ParserTests(unittest.TestCase):
             joined = "\n".join(s.text for s in segments).upper()
             self.assertTrue("OCR" in joined or "HELLO" in joined)
 
+    def test_parse_srt_dialogue_only(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "sample.srt"
+            path.write_text(
+                "1\n"
+                "00:00:01,000 --> 00:00:04,000\n"
+                "Hello world\n"
+                "\n"
+                "2\n"
+                "00:00:05,000 --> 00:00:08,000\n"
+                "<i>Second line</i> of dialogue\n",
+                encoding="utf-8",
+            )
+
+            segments = parse_document(path)
+            self.assertEqual(len(segments), 1)
+            self.assertEqual(segments[0].section_title, "subtitles")
+            text = segments[0].text
+            self.assertIn("Hello world", text)
+            self.assertIn("Second line of dialogue", text)
+            self.assertNotIn("-->", text)
+            self.assertNotIn("<i>", text)
+            for line in text.splitlines():
+                self.assertFalse(line.strip().isdigit())
+
     def test_supported_extensions_include_tables_and_images(self) -> None:
-        expected = {".csv", ".xlsx", ".png", ".jpg", ".jpeg", ".webp", ".tiff", ".tif"}
+        expected = {".csv", ".xlsx", ".srt", ".png", ".jpg", ".jpeg", ".webp", ".tiff", ".tif"}
         self.assertTrue(expected.issubset(models.SUPPORTED_EXTENSIONS))
 
 

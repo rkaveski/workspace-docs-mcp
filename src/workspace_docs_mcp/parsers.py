@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import IMAGE_EXTENSIONS, ParsedSegment
+from .models import IMAGE_EXTENSIONS, SUBTITLE_EXTENSIONS, ParsedSegment
 
 
 class ParserError(RuntimeError):
@@ -36,6 +37,8 @@ def parse_document(path: Path) -> list[ParsedSegment]:
         return _parse_csv(path)
     if suffix == ".xlsx":
         return _parse_xlsx(path)
+    if suffix in SUBTITLE_EXTENSIONS:
+        return _parse_srt(path)
     if suffix in IMAGE_EXTENSIONS:
         return _parse_image_ocr(path)
     raise ParserError(f"Unsupported file type: {path}")
@@ -53,6 +56,7 @@ def get_parser_capabilities() -> dict:
         },
         "csv": True,
         "xlsx": True,
+        "srt": True,
         "pdf_text": True,
     }
 
@@ -206,6 +210,32 @@ def _parse_tabular_rows(rows, *, section_title: str) -> list[ParsedSegment]:
         segments.append(ParsedSegment(text=" | ".join(pairs), section_title=section_title))
 
     return segments
+
+
+_SRT_TIMESTAMP_ARROW = "-->"
+_SRT_SECTION_TITLE = "subtitles"
+_SRT_TAG_PATTERN = re.compile(r"<[^>]+>")
+
+
+def _parse_srt(path: Path) -> list[ParsedSegment]:
+    text = path.read_text(encoding="utf-8", errors="ignore")
+
+    dialogue: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _SRT_TIMESTAMP_ARROW in stripped:
+            continue
+        if stripped.isdigit():
+            continue
+        cleaned = _SRT_TAG_PATTERN.sub("", stripped).strip()
+        if cleaned:
+            dialogue.append(cleaned)
+
+    if not dialogue:
+        return [ParsedSegment(text="")]
+    return [ParsedSegment(text="\n".join(dialogue), section_title=_SRT_SECTION_TITLE)]
 
 
 def _parse_image_ocr(path: Path) -> list[ParsedSegment]:
