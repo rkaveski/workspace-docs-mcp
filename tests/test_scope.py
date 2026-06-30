@@ -5,12 +5,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from workspace_docs_mcp.config import CONFIG_FILENAME
 from workspace_docs_mcp.scope import (
     classify_requested_scope,
     discover_source_files,
     infer_active_project,
     resolve_workspace_root,
 )
+
+
+def _write_docs_config(root: Path) -> None:
+    (root / CONFIG_FILENAME).write_text(
+        '[[source]]\nname = "workspace"\npath = "docs"\nscope = "workspace"\n',
+        encoding="utf-8",
+    )
 
 
 class ScopeTests(unittest.TestCase):
@@ -20,7 +28,15 @@ class ScopeTests(unittest.TestCase):
             p = root / "projects" / "alpha" / "src" / "main.py"
             p.parent.mkdir(parents=True)
             p.write_text("x=1")
-            self.assertEqual(infer_active_project(str(p), root), "alpha")
+            projects = ((root / "projects" / "alpha", "projects/alpha"),)
+            self.assertEqual(infer_active_project(str(p), root, projects), "projects/alpha")
+            # A file outside any project root yields no active project.
+            other = root / "docs" / "readme.md"
+            other.parent.mkdir(parents=True)
+            other.write_text("hi")
+            self.assertIsNone(infer_active_project(str(other), root, projects))
+            # With no configured projects there is no project convention.
+            self.assertIsNone(infer_active_project(str(p), root))
 
     def test_classify_auto_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -42,6 +58,7 @@ class ScopeTests(unittest.TestCase):
             docs.mkdir(parents=True)
             (docs / "note.md").write_text("hello", encoding="utf-8")
             (docs / "snap.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            _write_docs_config(root)
 
             with patch.dict("os.environ", {}, clear=True):
                 sources = discover_source_files(root)
@@ -56,6 +73,7 @@ class ScopeTests(unittest.TestCase):
             docs = root / "docs"
             docs.mkdir(parents=True)
             (docs / "snap.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            _write_docs_config(root)
 
             with patch.dict("os.environ", {"WORKSPACE_DOCS_ENABLE_IMAGE_OCR": "true"}):
                 sources = discover_source_files(root)
@@ -72,6 +90,7 @@ class ScopeTests(unittest.TestCase):
             outside.write_text("secret", encoding="utf-8")
             try:
                 (docs / "leak.md").symlink_to(outside)
+                _write_docs_config(root)
                 sources = discover_source_files(root)
                 paths = {s.relative_path for s in sources}
                 self.assertNotIn("docs/leak.md", paths)

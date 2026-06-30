@@ -7,10 +7,12 @@ from pathlib import Path
 from typing import Callable
 
 from .chunking import build_chunks
+from .config import load_config
 from .embeddings import EmbeddingEngine
 from .hashutil import sha256_file
 from .models import SourceFile
 from .parsers import ParserError, get_parser_capabilities, parse_document
+from .paths import resolve_rag_dir
 from .scope import RefreshScopeMode, discover_source_files, resolve_refresh_scope
 from .storage import Storage
 
@@ -37,7 +39,9 @@ class Indexer:
     def __init__(self, workspace_root: Path, embedding_engine: EmbeddingEngine) -> None:
         self.workspace_root = workspace_root
         self.embedding_engine = embedding_engine
-        self.storage = Storage(workspace_root)
+        self.config = load_config(workspace_root)
+        rag_dir = resolve_rag_dir(workspace_root, self.config.rag_dir)
+        self.storage = Storage(rag_dir, workspace_root)
         self.manifest_path = self.storage.rag_dir / "manifest.json"
 
     def close(self) -> None:
@@ -64,6 +68,7 @@ class Indexer:
         prev_files: dict[str, dict] = manifest.get("files", {})
         current_sources = discover_source_files(
             self.workspace_root,
+            self.config.sources,
             scope_mode=scope_mode,
             target_project=target_project,
         )
@@ -115,6 +120,10 @@ class Indexer:
                     if needs_reindex:
                         result.changed += 1
 
+            if not needs_reindex:
+                # Self-heal rows indexed before created_at_ns existed (no re-embed).
+                self.storage.backfill_created_at_ns(source.relative_path, source.created_at_ns)
+
             indexed_ok = True
             parse_error: str | None = None
             last_indexed_ns = int(prev.get("last_indexed_ns", time.time_ns())) if prev else time.time_ns()
@@ -140,7 +149,8 @@ class Indexer:
 
             new_manifest_files[source.relative_path] = {
                 "scope_type": source.scope_type,
-                "project_name": source.project_name,
+                "project": source.project,
+                "source_name": source.source_name,
                 "mtime_ns": source.mtime_ns,
                 "size_bytes": source.size_bytes,
                 "file_hash": file_hash,
@@ -164,9 +174,9 @@ class Indexer:
         files = manifest.get("files", {})
         projects = sorted(
             {
-                v.get("project_name")
+                v.get("project")
                 for v in files.values()
-                if v.get("scope_type") == "project" and v.get("project_name")
+                if v.get("scope_type") == "project" and v.get("project")
             }
         )
         return {
@@ -215,7 +225,8 @@ class Indexer:
         for row in self.storage.iter_indexed_files():
             files[str(row["relative_path"])] = {
                 "scope_type": row["scope_type"],
-                "project_name": row["project_name"],
+                "project": row["project"],
+                "source_name": row["source_name"],
                 "mtime_ns": int(row["modified_at_ns"]),
                 "size_bytes": int(row["size_bytes"]),
                 "file_hash": str(row["file_hash"]),
@@ -253,15 +264,15 @@ class Indexer:
         target_project: str | None,
     ) -> bool:
         scope_type = meta.get("scope_type")
-        project_name = meta.get("project_name")
+        project = meta.get("project")
         if scope_mode == "all":
             return True
         if scope_mode == "workspace":
             return scope_type == "workspace"
         if scope_mode == "project":
-            return scope_type == "project" and project_name == target_project
+            return scope_type == "project" and project == target_project
         if scope_mode == "auto_project":
-            return scope_type == "workspace" or (scope_type == "project" and project_name == target_project)
+            return scope_type == "workspace" or (scope_type == "project" and project == target_project)
         return True
 
     def _emit_progress(self, progress_callback: Callable[[dict], None] | None, result: ReconcileResult) -> None:

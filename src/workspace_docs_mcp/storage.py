@@ -7,14 +7,16 @@ from typing import Any
 
 from .chunking import Chunk
 from .models import SourceFile
+from .paths import journal_mode_for
 
 
 class Storage:
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(self, rag_dir: Path, workspace_root: Path) -> None:
         self.workspace_root = workspace_root
-        self.rag_dir = workspace_root / ".rag"
+        self.rag_dir = rag_dir
         self.rag_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.rag_dir / "index.sqlite"
+        self.journal_mode = journal_mode_for(self.rag_dir)
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
         self._init_db()
@@ -23,9 +25,11 @@ class Storage:
         self.conn.close()
 
     def _init_db(self) -> None:
+        # WAL is unsupported on network filesystems; journal_mode_for falls back
+        # to DELETE there (and honors an explicit override).
         self.conn.executescript(
-            """
-            PRAGMA journal_mode=WAL;
+            f"""
+            PRAGMA journal_mode={self.journal_mode.value};
             PRAGMA synchronous=NORMAL;
 
             CREATE TABLE IF NOT EXISTS files (
@@ -34,9 +38,11 @@ class Storage:
               relative_path TEXT NOT NULL UNIQUE,
               abs_path TEXT NOT NULL,
               scope_type TEXT NOT NULL,
-              project_name TEXT,
+              project TEXT,
+              source_name TEXT,
               file_hash TEXT NOT NULL,
               modified_at_ns INTEGER NOT NULL,
+              created_at_ns INTEGER NOT NULL DEFAULT 0,
               size_bytes INTEGER NOT NULL,
               parser TEXT NOT NULL,
               indexed_at INTEGER NOT NULL
@@ -63,7 +69,6 @@ class Storage:
               FOREIGN KEY(chunk_id) REFERENCES chunks(chunk_id) ON DELETE CASCADE
             );
 
-            CREATE INDEX IF NOT EXISTS idx_files_scope_project ON files(scope_type, project_name);
             CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_id);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
@@ -72,11 +77,27 @@ class Storage:
             );
             """
         )
+        # Migrate before creating the project index, since it references the column.
+        self._migrate_schema()
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_files_scope_project ON files(scope_type, project)")
         self.conn.commit()
+
+    def _migrate_schema(self) -> None:
+        existing_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(files)")}
+        if "created_at_ns" not in existing_columns:
+            self.conn.execute("ALTER TABLE files ADD COLUMN created_at_ns INTEGER NOT NULL DEFAULT 0")
+        # Additive migration: existing in-repo rows keep their identity; source_name
+        # backfills on the next reconcile, so no re-index is required on upgrade.
+        if "source_name" not in existing_columns:
+            self.conn.execute("ALTER TABLE files ADD COLUMN source_name TEXT")
+        # The project identity moved from a free-text name to the project root path;
+        # the column was renamed to match. Rename in place to preserve existing rows.
+        if "project" not in existing_columns and "project_name" in existing_columns:
+            self.conn.execute("ALTER TABLE files RENAME COLUMN project_name TO project")
 
     def get_known_projects(self) -> list[str]:
         rows = self.conn.execute(
-            "SELECT DISTINCT project_name FROM files WHERE project_name IS NOT NULL ORDER BY project_name"
+            "SELECT DISTINCT project FROM files WHERE project IS NOT NULL ORDER BY project"
         ).fetchall()
         return [str(r[0]) for r in rows if r[0]]
 
@@ -90,7 +111,8 @@ class Storage:
             SELECT
               relative_path,
               scope_type,
-              project_name,
+              project,
+              source_name,
               modified_at_ns,
               size_bytes,
               file_hash,
@@ -132,17 +154,19 @@ class Storage:
                 self.conn.execute(
                     """
                     UPDATE files
-                    SET workspace_root = ?, abs_path = ?, scope_type = ?, project_name = ?, file_hash = ?,
-                        modified_at_ns = ?, size_bytes = ?, parser = ?, indexed_at = ?
+                    SET workspace_root = ?, abs_path = ?, scope_type = ?, project = ?, source_name = ?,
+                        file_hash = ?, modified_at_ns = ?, created_at_ns = ?, size_bytes = ?, parser = ?, indexed_at = ?
                     WHERE file_id = ?
                     """,
                     (
                         str(source_file.workspace_root),
                         str(source_file.absolute_path),
                         source_file.scope_type,
-                        source_file.project_name,
+                        source_file.project,
+                        source_file.source_name,
                         file_hash,
                         source_file.mtime_ns,
+                        source_file.created_at_ns,
                         source_file.size_bytes,
                         parser_name,
                         indexed_at_ns,
@@ -153,18 +177,20 @@ class Storage:
                 cur = self.conn.execute(
                     """
                     INSERT INTO files(
-                      workspace_root, relative_path, abs_path, scope_type, project_name,
-                      file_hash, modified_at_ns, size_bytes, parser, indexed_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                      workspace_root, relative_path, abs_path, scope_type, project, source_name,
+                      file_hash, modified_at_ns, created_at_ns, size_bytes, parser, indexed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(source_file.workspace_root),
                         source_file.relative_path,
                         str(source_file.absolute_path),
                         source_file.scope_type,
-                        source_file.project_name,
+                        source_file.project,
+                        source_file.source_name,
                         file_hash,
                         source_file.mtime_ns,
+                        source_file.created_at_ns,
                         source_file.size_bytes,
                         parser_name,
                         indexed_at_ns,
@@ -228,6 +254,18 @@ class Storage:
             self.conn.execute("DELETE FROM files WHERE file_id = ?", (file_id,))
         return True
 
+    def backfill_created_at_ns(self, relative_path: str, created_at_ns: int) -> bool:
+        # Cheap, idempotent self-heal for rows indexed before created_at_ns existed:
+        # only touches rows still at the default 0, no re-embedding required.
+        if not created_at_ns:
+            return False
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE files SET created_at_ns = ? WHERE relative_path = ? AND created_at_ns = 0",
+                (created_at_ns, relative_path),
+            )
+        return cur.rowcount > 0
+
     def get_file_record(self, relative_path: str) -> sqlite3.Row | None:
         return self.conn.execute(
             "SELECT * FROM files WHERE relative_path = ?", (relative_path,)
@@ -247,10 +285,10 @@ class Storage:
         if scope_mode == "workspace":
             where_clauses.append("f.scope_type = 'workspace'")
         elif scope_mode == "project" and target_project:
-            where_clauses.append("f.scope_type = 'project' AND f.project_name = ?")
+            where_clauses.append("f.scope_type = 'project' AND f.project = ?")
             params.append(target_project)
         elif scope_mode == "auto_project" and target_project:
-            where_clauses.append("(f.scope_type = 'workspace' OR (f.scope_type = 'project' AND f.project_name = ?))")
+            where_clauses.append("(f.scope_type = 'workspace' OR (f.scope_type = 'project' AND f.project = ?))")
             params.append(target_project)
         elif scope_mode == "auto_workspace":
             where_clauses.append("f.scope_type = 'workspace'")
@@ -265,7 +303,9 @@ class Storage:
               c.page_number,
               f.relative_path,
               f.scope_type,
-              f.project_name,
+              f.project,
+              f.modified_at_ns,
+              f.created_at_ns,
               bm25(chunks_fts) AS bm25
             FROM chunks_fts
             JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id
@@ -291,7 +331,9 @@ class Storage:
                     "page_number": row["page_number"],
                     "relative_path": row["relative_path"],
                     "scope_type": row["scope_type"],
-                    "project_name": row["project_name"],
+                    "project": row["project"],
+                    "modified_at_ns": row["modified_at_ns"],
+                    "created_at_ns": row["created_at_ns"],
                     "bm25": float(row["bm25"]),
                     "embedding": json.loads(emb_row["vector_json"]) if emb_row else [],
                 }

@@ -11,7 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from .embeddings import EmbeddingEngine
 from .indexer import Indexer
 from .retriever import Retriever
-from .scope import resolve_workspace_root
+from .scope import doc_path_for, resolve_workspace_root
 
 mcp = FastMCP("workspace_docs_mcp")
 
@@ -55,7 +55,12 @@ def _runtime(workspace_root: Optional[str]) -> WorkspaceRuntime:
 
         embedding = EmbeddingEngine()
         indexer = Indexer(root, embedding)
-        retriever = Retriever(root, indexer.storage, embedding)
+        projects = tuple(
+            (s.project_root, s.project)
+            for s in indexer.config.sources
+            if s.project_root is not None and s.project is not None
+        )
+        retriever = Retriever(root, indexer.storage, embedding, projects=projects)
 
         status = indexer.status()
         index_ready = bool(status.get("last_reconcile_at_ns") or status.get("indexed_files", 0) > 0)
@@ -222,25 +227,27 @@ def get_doc(
     else:
         resolved = (runtime.root / candidate).resolve()
 
-    try:
-        relative_path = resolved.relative_to(runtime.root).as_posix()
-    except ValueError as exc:
-        raise ValueError("Requested path is outside workspace root") from exc
+    # Identity matches indexing: workspace-relative when inside the workspace,
+    # otherwise the absolute path (for docs configured outside the repo).
+    relative_path = doc_path_for(resolved, runtime.root)
 
     record = runtime.indexer.storage.get_file_record(relative_path)
     if record is None:
         with _LOCK:
             if runtime.refresh.status == "running":
                 raise ValueError("Path is not indexed yet; refresh is still in progress")
-        raise ValueError("Path is not indexed; expected docs or project docs path")
+        raise ValueError("Path is not indexed; expected a docs or project docs path")
 
-    suffix = resolved.suffix.lower()
+    # Only ever read a file that is in the index, and read its canonical stored
+    # path rather than the caller-supplied one.
+    source_path = Path(record["abs_path"])
+    suffix = source_path.suffix.lower()
     if suffix in {".md", ".markdown", ".txt"}:
-        text = resolved.read_text(encoding="utf-8", errors="ignore")
+        text = source_path.read_text(encoding="utf-8", errors="ignore")
     else:
         from .parsers import parse_document
 
-        segments = parse_document(resolved)
+        segments = parse_document(source_path)
         if suffix == ".pdf" and page is not None:
             segments = [s for s in segments if s.page_number == page]
         text = "\n\n".join(s.text for s in segments)
@@ -252,7 +259,7 @@ def get_doc(
         "workspace_root": str(runtime.root),
         "relative_path": relative_path,
         "scope_type": record["scope_type"],
-        "project_name": record["project_name"],
+        "project": record["project"],
         "content": text,
         "truncated": len(text) >= max_chars,
     }
