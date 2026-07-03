@@ -34,7 +34,7 @@ Requires **Python 3.11+** and [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
 # Install from GitHub, pinned to a tag:
-uv tool install "git+https://github.com/rkaveski/workspace-docs-mcp@v0.2.0"
+uv tool install "git+https://github.com/rkaveski/workspace-docs-mcp@v0.2.1"
 
 # Or run ephemerally (no install):
 uvx --from "git+https://github.com/rkaveski/workspace-docs-mcp" workspace-docs-mcp
