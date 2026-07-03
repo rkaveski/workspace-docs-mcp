@@ -1,9 +1,15 @@
 name: release
 
+# Manual-trigger only until PyPI trusted publishing is configured for this
+# repo (pypi.org → Publishing → add GitHub publisher for release.yml).
+# Once that's set up, restore the tag trigger:
+#
+#   on:
+#     push:
+#       tags:
+#         - "v*"
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 jobs:
   publish:
