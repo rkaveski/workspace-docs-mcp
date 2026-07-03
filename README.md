@@ -354,7 +354,14 @@ Plain chat requests:
 - `Search docs for "<topic>"`
 - `Open the doc that mentions <topic>`
 
-Indexing is refresh-driven (not continuous file watching). After you add, edit, move, or delete docs, run refresh again. In a brand-new workspace (no existing index), the first `search_docs` / `status_docs` / `get_doc` call starts an initial background refresh automatically.
+### Every time you add, edit, move, or delete a doc
+
+**Indexing is refresh-driven, not automatic.** The server does not watch the filesystem — a newly added or changed file is invisible to search until you refresh. Every time docs change, whether they live in an in-repo `docs/` folder or an external source, do this:
+
+1. In chat: `Refresh docs for this workspace`. This is non-blocking — it kicks off a background job and returns immediately.
+2. Optionally confirm it finished: `Show docs indexing status`.
+
+That's it — no restart, no re-running setup, no config changes. Refresh is incremental: unchanged files are skipped by content hash, so only new/edited/deleted files are actually re-processed, and this stays fast even on repeated runs. The **only** exception is the very first time a workspace has no index at all — then the first `search_docs` / `status_docs` / `get_doc` call auto-starts an initial refresh for you. After that initial bootstrap, refreshing is always a manual step.
 
 ## MCP tools
 
