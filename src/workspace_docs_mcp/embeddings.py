@@ -2,29 +2,105 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
+import threading
 from collections import Counter
+from enum import Enum
+from typing import Final
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_]{2,}")
 
+DEFAULT_MODEL_NAME: Final = "BAAI/bge-small-en-v1.5"
+
+# Embedding backend selection. `auto` tries fastembed with a bounded init wait;
+# `fallback` never touches fastembed (no model download, no network — right for
+# locked-down machines); `fastembed` waits for fastembed without a timeout.
+ENV_EMBEDDING_MODE: Final = "WORKSPACE_DOCS_EMBEDDING_MODE"
+# How long `auto` waits for fastembed to initialize (first run may download the
+# model from Hugging Face) before falling back. Firewalls that silently drop
+# traffic hang the download instead of failing it, so a bound is essential.
+ENV_EMBEDDING_INIT_TIMEOUT: Final = "WORKSPACE_DOCS_EMBEDDING_INIT_TIMEOUT_SECONDS"
+DEFAULT_INIT_TIMEOUT_SECONDS: Final = 30.0
+
+MODE_LABEL_FASTEMBED: Final = "fastembed"
+MODE_LABEL_FALLBACK: Final = "hashed-fallback"
+
+
+class EmbeddingMode(str, Enum):
+    AUTO = "auto"
+    FASTEMBED = "fastembed"
+    FALLBACK = "fallback"
+
+
+def _configured_mode() -> EmbeddingMode:
+    raw = os.getenv(ENV_EMBEDDING_MODE, "").strip().lower()
+    try:
+        return EmbeddingMode(raw) if raw else EmbeddingMode.AUTO
+    except ValueError:
+        return EmbeddingMode.AUTO
+
+
+def _configured_init_timeout() -> float:
+    raw = os.getenv(ENV_EMBEDDING_INIT_TIMEOUT, "").strip()
+    try:
+        value = float(raw) if raw else DEFAULT_INIT_TIMEOUT_SECONDS
+    except ValueError:
+        return DEFAULT_INIT_TIMEOUT_SECONDS
+    return max(1.0, value)
+
 
 class EmbeddingEngine:
-    """Embeddings with fastembed primary and deterministic local fallback."""
+    """Embeddings with fastembed primary and deterministic local fallback.
 
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5", dim: int = 256) -> None:
+    fastembed downloads its model from Hugging Face on first use. On networks
+    that silently drop that traffic (common on VDI), the download hangs rather
+    than raising, so `auto` mode initializes fastembed in a worker thread with a
+    bounded wait and falls back to hashed embeddings if it doesn't come up.
+    """
+
+    def __init__(self, model_name: str = DEFAULT_MODEL_NAME, dim: int = 256) -> None:
         self.model_name = model_name
         self.dim = dim
         self._model = None
         self._available = False
 
+        requested = _configured_mode()
+        if requested == EmbeddingMode.FALLBACK:
+            return
+
+        if requested == EmbeddingMode.FASTEMBED:
+            # Explicitly requested: wait as long as it takes (e.g. a deliberate
+            # first-run model download); errors still degrade to the fallback.
+            self._model = self._build_model()
+            self._available = self._model is not None
+            return
+
+        self._model = self._build_model_with_timeout(_configured_init_timeout())
+        self._available = self._model is not None
+
+    def _build_model(self):
         try:
             from fastembed import TextEmbedding
 
-            self._model = TextEmbedding(model_name=model_name)
-            self._available = True
+            return TextEmbedding(model_name=self.model_name)
         except Exception:
-            self._model = None
-            self._available = False
+            return None
+
+    def _build_model_with_timeout(self, timeout_seconds: float):
+        result: dict = {}
+
+        def target() -> None:
+            result["model"] = self._build_model()
+
+        worker = threading.Thread(target=target, name="workspace-docs-embedding-init", daemon=True)
+        worker.start()
+        worker.join(timeout_seconds)
+        if worker.is_alive():
+            # Init is stuck (likely a stalled model download). Leave the daemon
+            # thread behind and serve hashed fallback for this process.
+            return None
+        return result.get("model")
 
     @property
     def available(self) -> bool:
@@ -32,7 +108,7 @@ class EmbeddingEngine:
 
     @property
     def mode(self) -> str:
-        return "fastembed" if self._available else "hashed-fallback"
+        return MODE_LABEL_FASTEMBED if self._available else MODE_LABEL_FALLBACK
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
         if not texts:

@@ -321,11 +321,25 @@ Rule of thumb: scope it as narrowly as is still convenient. Setting it to your *
 
 The default is safe everywhere. Reach for `"cache"` or an explicit path when the repo tree is read-only/ephemeral, when docs live entirely outside the repo, or on a synced filesystem.
 
+## Embeddings and the first-run model download
+
+Semantic search uses [fastembed](https://github.com/qdrant/fastembed), which **downloads its embedding model (~100 MB) from Hugging Face the first time it runs** and caches it locally. On a normal machine this happens once, silently. Two things to know:
+
+- If Hugging Face is unreachable, the server does **not** break: `auto` mode (the default) waits up to 30 seconds for fastembed to initialize, then falls back to a deterministic hashed embedding that needs no model and no network. Ranking is mostly lexical (BM25) anyway, so search keeps working with somewhat reduced semantic quality. `status_docs` reports which mode is active (`embedding_mode: "fastembed"` or `"hashed-fallback"`).
+- You can control this explicitly with `WORKSPACE_DOCS_EMBEDDING_MODE`:
+
+| Value | Behavior |
+|-------|----------|
+| `auto` (default) | Try fastembed with a bounded wait (`WORKSPACE_DOCS_EMBEDDING_INIT_TIMEOUT_SECONDS`, default 30); fall back if it doesn't come up. |
+| `fallback` | Never touch fastembed — no model download, no network attempt, instant startup. Right for locked-down machines. |
+| `fastembed` | Wait for fastembed without a timeout (e.g. to let a deliberate first-run download finish). |
+
 ## Windows & VDI guidance
 
-The default (`.rag/` in-repo) works on Windows and VDI out of the box. Two notes for managed VDI environments:
+The default (`.rag/` in-repo) works on Windows and VDI out of the box. Three notes for managed VDI environments:
 
 - **Index location.** On VDI the repo often sits on a mapped network home drive. The in-repo index is safe there because the SQLite journal mode automatically falls back from WAL (which is unsupported on network filesystems) to `DELETE`. If your VDI uses **FSLogix** or another persistent profile disk, set `rag_dir = "cache"` for local-speed *and* persistence. If you need to force a journal mode on a mapped drive we can't auto-detect, set `WORKSPACE_DOCS_SQLITE_JOURNAL_MODE=DELETE`.
+- **Blocked Hugging Face = set embeddings to fallback.** Corporate firewalls that block Hugging Face often *stall* the first-run model download rather than refusing it. `auto` mode self-heals after its 30-second wait, but on machines you know can't reach Hugging Face, skip the wait entirely by adding to the server's `env`: `"WORKSPACE_DOCS_EMBEDDING_MODE": "fallback"` (setting `"HF_HUB_OFFLINE": "1"` also works — it makes the download fail fast instead of hanging). See [Embeddings and the first-run model download](#embeddings-and-the-first-run-model-download).
 - **Launching the server.** Some Windows MCP clients need the command wrapped: use `cmd` with args `["/c", "uvx", "--from", "git+…", "workspace-docs-mcp"]`. And confirm `uv`/Python 3.11+ are permitted on the VDI image — on fully locked-down images you may need an admin to provide them.
 
 ## How it works (no MCP knowledge needed)
@@ -406,6 +420,8 @@ Existing in-repo indexes keep their identity — the `source_name` column backfi
 
 - `WORKSPACE_DOCS_ALLOWED_ROOTS` — comma-separated allowlist of directories permitted for external doc sources and `workspace_root`.
 - `WORKSPACE_DOCS_SQLITE_JOURNAL_MODE` — force `WAL` / `DELETE` / `TRUNCATE` (useful on mapped network drives).
+- `WORKSPACE_DOCS_EMBEDDING_MODE` — `auto` (default) / `fallback` / `fastembed`. See [Embeddings and the first-run model download](#embeddings-and-the-first-run-model-download).
+- `WORKSPACE_DOCS_EMBEDDING_INIT_TIMEOUT_SECONDS` default `30` — how long `auto` waits for fastembed before falling back.
 - `WORKSPACE_DOCS_ENABLE_DOCX` default `true`
 - `WORKSPACE_DOCS_ENABLE_IMAGE_OCR` default `false`
 - `WORKSPACE_DOCS_OCR_LANG` default `eng`
